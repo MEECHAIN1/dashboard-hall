@@ -80,17 +80,31 @@ export interface MagicOrbPayload {
   };
 }
 
+export interface RelayLogEntry {
+  id: string;
+  from_node: string;
+  to_node: string;
+  payload: string;
+  source: string; // 'dashboard' | 'external-client' | custom source
+  created_at: string;
+  latencyMs?: number;
+}
+
 export interface ComPortBridgeItem {
   id: string;
   name: string;
   port: string;
-  baudRate: number;
-  status: 'connected' | 'transmitting' | 'idle' | 'disconnected';
-  deviceType: 'Azure VM Bridge' | 'Anvil Local Core' | 'Vercel Edge Proxy' | 'Hardware Secure Module' | 'IoT Sensor Gateway' | 'Live Upstream Probe';
-  packetsTransferred: number;
-  lastPing: string;
-  latencyMs?: number;
+  baudRate: number | null;
+  status: 'connected' | 'transmitting' | 'idle' | 'offline' | 'unknown' | 'disconnected';
+  deviceType: string;
+  latencyMs: number | null;
+  source: 'live-probe' | 'identity-only';
+  identity: 'configured';
+  packetsTransferred?: number;
+  lastPing?: string;
   targetUrl?: string;
+  probeUrl?: string | null;
+  probeMethod?: 'GET' | 'RPC' | null;
   probeStatus?: 'ok' | 'error' | 'probing';
 }
 

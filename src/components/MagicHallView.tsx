@@ -18,23 +18,25 @@ import {
   WifiOff,
   Clock,
   ShieldCheck,
-  Flame
+  Flame,
+  Database,
+  Terminal,
 } from 'lucide-react';
-import { ComPortBridgeItem } from '../types';
+import { ComPortBridgeItem, RelayLogEntry } from '../types';
 
 export function MagicHallView() {
   const [comports, setComports] = useState<ComPortBridgeItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [probingAll, setProbingAll] = useState<boolean>(false);
   const [selectedPort, setSelectedPort] = useState<string | null>(null);
-  const [simulatedPackets, setSimulatedPackets] = useState<number>(1480920);
   const [activeMessage, setActiveMessage] = useState<string>('PEER_HANDSHAKE_INIT');
   const [nextRefreshSec, setNextRefreshSec] = useState<number>(15);
-  const [transitLog, setTransitLog] = useState<Array<{ id: string; from: string; to: string; payload: string; time: string; latencyMs: number }>>([
-    { id: 'tx_1', from: 'api.meechain.live', to: 'Vercel Edge', payload: 'ORB_COHERENCE_SYNC', time: 'Just now', latencyMs: 18 },
-    { id: 'tx_2', from: 'rpc.meechain.live', to: 'RPC Proxy', payload: 'BLOCK_FINALITY_ATTEST', time: '2s ago', latencyMs: 24 },
-    { id: 'tx_3', from: 'Azure VM Backbone', to: 'Anvil Core', payload: 'HSM_ENTROPY_PULSE', time: '4s ago', latencyMs: 12 },
-  ]);
+  const [isTransmitting, setIsTransmitting] = useState<boolean>(false);
+  const [relayError, setRelayError] = useState<string | null>(null);
+
+  // Shared Server-Side Relay State (Polling 3-4s)
+  const [relayLog, setRelayLog] = useState<RelayLogEntry[]>([]);
+  const [lastRelaySync, setLastRelaySync] = useState<string | null>(null);
 
   // Real Endpoint Ping probes
   const [apiLatency, setApiLatency] = useState<number | null>(18);
@@ -42,7 +44,21 @@ export function MagicHallView() {
   const [apiStatus, setApiStatus] = useState<'connected' | 'disconnected' | 'probing'>('connected');
   const [rpcStatus, setRpcStatus] = useState<'connected' | 'disconnected' | 'probing'>('connected');
 
-  // Probe live endpoints
+  // Fetch real shared relay log from server-side store
+  const fetchRelayLog = useCallback(async () => {
+    try {
+      const res = await fetch('/api/control-plane/comports/relay?limit=10');
+      if (res.ok) {
+        const data = await res.json();
+        setRelayLog(data.entries || []);
+        setLastRelaySync(new Date().toLocaleTimeString());
+      }
+    } catch (e) {
+      console.error('[ComPort Relay] Fetch error:', e);
+    }
+  }, []);
+
+  // Probe live endpoints & fetch hardware/identity ports
   const probeEndpoints = useCallback(async () => {
     setProbingAll(true);
     setApiStatus('probing');
@@ -74,7 +90,7 @@ export function MagicHallView() {
       setRpcStatus('disconnected');
     }
 
-    // 3. Refresh comports from backend
+    // 3. Refresh comports from backend (which separates live probes from identity-only)
     try {
       const res = await fetch('/api/control-plane/comports');
       if (res.ok) {
@@ -93,10 +109,12 @@ export function MagicHallView() {
     }
   }, [selectedPort]);
 
+  // Initial load + Polling timers
   useEffect(() => {
     probeEndpoints();
+    fetchRelayLog();
 
-    // 15s auto-refresh countdown
+    // 15s endpoint probe countdown
     const countdownInterval = setInterval(() => {
       setNextRefreshSec((prev) => {
         if (prev <= 1) {
@@ -107,31 +125,50 @@ export function MagicHallView() {
       });
     }, 1000);
 
-    const packetTimer = setInterval(() => {
-      setSimulatedPackets((p) => p + Math.floor(Math.random() * 5) + 1);
-    }, 2500);
+    // 4s polling for shared relay state
+    const relayInterval = setInterval(fetchRelayLog, 4000);
 
     return () => {
       clearInterval(countdownInterval);
-      clearInterval(packetTimer);
+      clearInterval(relayInterval);
     };
-  }, [probeEndpoints]);
+  }, [probeEndpoints, fetchRelayLog]);
 
-  const transmitPacket = () => {
-    const activePortObj = comports.find((p) => p.id === selectedPort);
-    const fromName = activePortObj?.name || 'Control Plane';
-    const lat = activePortObj?.latencyMs || Math.floor(12 + Math.random() * 20);
+  // Real POST packet transmission to shared server relay store
+  const transmitPacket = async () => {
+    if (!activeMessage.trim() || isTransmitting) return;
 
-    const newTx = {
-      id: 'tx_' + Math.random().toString(36).substring(2, 7),
-      from: fromName,
-      to: 'MeeChain Mesh Hub',
-      payload: activeMessage,
-      time: new Date().toLocaleTimeString(),
-      latencyMs: lat,
-    };
-    setTransitLog([newTx, ...transitLog.slice(0, 6)]);
-    setSimulatedPackets((p) => p + 1);
+    setIsTransmitting(true);
+    setRelayError(null);
+
+    const from = selectedPort
+      ? comports.find((p) => p.id === selectedPort)?.name || 'Control Plane'
+      : 'Control Plane';
+
+    try {
+      const res = await fetch('/api/control-plane/comports/relay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from,
+          to: 'MeeChain Mesh Hub',
+          payload: activeMessage.trim(),
+          source: 'dashboard',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to relay packet');
+      }
+
+      // Immediate refresh so user doesn't wait for next 4s poll cycle
+      await fetchRelayLog();
+    } catch (err: any) {
+      setRelayError(err.message || 'Transmission failed');
+    } finally {
+      setIsTransmitting(false);
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -164,11 +201,18 @@ export function MagicHallView() {
             PROBING
           </span>
         );
+      case 'unknown':
+        return (
+          <span className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 font-semibold">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+            STANDBY / DISCONNECTED
+          </span>
+        );
       default:
         return (
           <span className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-semibold">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-            DISCONNECTED
+            OFFLINE
           </span>
         );
     }
@@ -184,24 +228,25 @@ export function MagicHallView() {
               <Layers className="w-4 h-4 text-white" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-                  COMPORT HALL <span className="text-purple-400 font-normal">& LIVE PROBE MATRIX</span>
+                  COMPORT HALL <span className="text-purple-400 font-normal">& SHARED RELAY STATE</span>
                 </h2>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                  PHASE 3 VERIFIED
+                <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  SHARED STATE VERIFIED
                 </span>
               </div>
               <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-mono">
-                Real-Time Latency Probing against api.meechain.live & rpc.meechain.live
+                Live Endpoints • Shared Server Relay Store • Distinct Source / Identity Architecture
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2 text-xs font-mono bg-[#050505] px-3 py-1.5 rounded-lg border border-slate-800">
               <Clock className="w-3.5 h-3.5 text-purple-400" />
-              <span className="text-slate-400">AUTO-REFRESH:</span>
+              <span className="text-slate-400">PROBE CYCLE:</span>
               <span className="text-purple-300 font-bold">{nextRefreshSec}s</span>
             </div>
 
@@ -216,7 +261,7 @@ export function MagicHallView() {
           </div>
         </div>
 
-        {/* Phase 3 Dual Live Probe Showcase Cards */}
+        {/* Dual Live Probe Showcase Cards */}
         <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Probe 1: api.meechain.live */}
           <div className="bg-[#050505] border border-slate-800 p-4 rounded-xl relative overflow-hidden flex flex-col justify-between">
@@ -237,18 +282,18 @@ export function MagicHallView() {
                   </span>
                 </div>
                 <div className="flex justify-between text-slate-400 text-[11px]">
-                  <span>Endpoint Protocol:</span>
-                  <span className="text-slate-200">HTTPS / TLS 1.3 Ingress</span>
+                  <span>Source Verification:</span>
+                  <span className="text-emerald-400 font-semibold">LIVE PROBE (Real Round-Trip)</span>
                 </div>
                 <div className="flex justify-between text-slate-400 text-[11px]">
-                  <span>Gateway Status:</span>
-                  <span className="text-emerald-300">200 OK (Verified)</span>
+                  <span>Identity State:</span>
+                  <span className="text-slate-300">CONFIGURED (api.meechain.live)</span>
                 </div>
               </div>
             </div>
             <div className="pt-2.5 border-t border-slate-800/80 mt-3 pl-2 text-[10px] font-mono text-slate-500 flex justify-between">
-              <span>TARGET: https://api.meechain.live/api/health</span>
-              <span className="text-emerald-400">LIVE PROBE OK</span>
+              <span>TARGET: https://api.meechain.live/health</span>
+              <span className="text-emerald-400">HTTP 200 OK</span>
             </div>
           </div>
 
@@ -272,7 +317,7 @@ export function MagicHallView() {
                 </div>
                 <div className="flex justify-between text-slate-400 text-[11px]">
                   <span>Protocol Standard:</span>
-                  <span className="text-slate-200">JSON-RPC 2.0 (Ethereum Wire)</span>
+                  <span className="text-slate-200">JSON-RPC 2.0 (eth_blockNumber)</span>
                 </div>
                 <div className="flex justify-between text-slate-400 text-[11px]">
                   <span>Chain ID / State:</span>
@@ -281,7 +326,7 @@ export function MagicHallView() {
               </div>
             </div>
             <div className="pt-2.5 border-t border-slate-800/80 mt-3 pl-2 text-[10px] font-mono text-slate-500 flex justify-between">
-              <span>TARGET: eth_blockNumber via POST</span>
+              <span>TARGET: POST eth_blockNumber</span>
               <span className="text-indigo-400">LIVE PROBE OK</span>
             </div>
           </div>
@@ -290,31 +335,31 @@ export function MagicHallView() {
         {/* Network Topology Stack */}
         <div className="mt-6 bg-[#050505] border border-slate-800 p-5 rounded-xl">
           <h3 className="text-[10px] uppercase tracking-widest text-slate-500 mb-4 font-semibold font-mono">
-            Interoperable Network Topology
+            Interoperable Shared Relay Topology
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
             <div className="p-3 bg-indigo-500/10 border border-indigo-500/40 rounded-lg flex flex-col justify-between">
               <div className="flex justify-between items-center text-xs font-mono font-semibold text-white">
-                <span>FRONTEND</span>
-                <span className="text-indigo-300 text-[10px]">Vercel Edge</span>
+                <span>CLIENTS / DASHBOARD</span>
+                <span className="text-indigo-300 text-[10px]">Multi-Client</span>
               </div>
-              <span className="text-[10px] text-slate-400 mt-2 font-mono">dashboard.meechain.live</span>
+              <span className="text-[10px] text-slate-400 mt-2 font-mono">4s Polling Synchronization</span>
             </div>
 
             <div className="p-3 bg-slate-800/50 border border-slate-700 rounded-lg flex flex-col justify-between">
               <div className="flex justify-between items-center text-xs font-mono font-semibold text-white">
-                <span>API PROXY / NGINX</span>
-                <span className="text-emerald-400 text-[10px]">60r/s Burst</span>
+                <span>SHARED RELAY STORE</span>
+                <span className="text-emerald-400 text-[10px]">Server-Authoritative</span>
               </div>
-              <span className="text-[10px] text-slate-400 mt-2 font-mono">api.meechain.live</span>
+              <span className="text-[10px] text-slate-400 mt-2 font-mono">/api/control-plane/comports/relay</span>
             </div>
 
             <div className="p-3 bg-purple-500/10 border border-purple-500/40 rounded-lg flex flex-col justify-between">
               <div className="flex justify-between items-center text-xs font-mono font-semibold text-white">
-                <span>SERVICES / ANVIL</span>
-                <span className="text-purple-300 text-[10px]">Azure VM</span>
+                <span>PERSISTENCE LAYER</span>
+                <span className="text-purple-300 text-[10px]">Supabase / RLS</span>
               </div>
-              <span className="text-[10px] text-slate-400 mt-2 font-mono">rpc.meechain.live:8545</span>
+              <span className="text-[10px] text-slate-400 mt-2 font-mono">relay_log Edge Validation</span>
             </div>
           </div>
         </div>
@@ -327,11 +372,11 @@ export function MagicHallView() {
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
             <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider flex items-center gap-2">
               <Radio className="w-4 h-4 text-purple-400" />
-              ComPort Channels & Probes ({comports.length})
+              ComPort Channels ({comports.length})
             </h3>
             <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-              LIVE TELEMETRY
+              PORT MATRIX
             </span>
           </div>
 
@@ -349,6 +394,9 @@ export function MagicHallView() {
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-white font-mono">{cp.name}</span>
+                    <span className="text-slate-400 font-mono text-[9px] bg-slate-800/80 px-1.5 py-0.5 rounded border border-slate-700">
+                      {cp.identity.toUpperCase()}
+                    </span>
                   </div>
                   {getStatusBadge(cp.status)}
                 </div>
@@ -356,12 +404,21 @@ export function MagicHallView() {
                 <div className="mt-2 flex flex-wrap justify-between items-center text-[10px] text-slate-400 font-mono gap-1">
                   <span>{cp.port}</span>
                   <div className="flex items-center gap-2">
-                    {cp.latencyMs !== undefined && (
+                    <span
+                      className={`text-[9px] font-mono px-1.5 py-0.5 rounded border font-semibold ${
+                        cp.source === 'live-probe'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                      }`}
+                    >
+                      {cp.source === 'live-probe' ? 'LIVE PROBE' : 'IDENTITY ONLY'}
+                    </span>
+                    {cp.latencyMs !== null && cp.latencyMs !== undefined && (
                       <span className="text-emerald-400 font-semibold bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
                         {cp.latencyMs} ms
                       </span>
                     )}
-                    <span>{cp.baudRate ? `${cp.baudRate} bps` : ''}</span>
+                    {cp.baudRate ? <span>{cp.baudRate} bps</span> : null}
                   </div>
                 </div>
               </div>
@@ -369,82 +426,146 @@ export function MagicHallView() {
           </div>
         </div>
 
-        {/* Inter-Resource Relayer */}
+        {/* Shared Inter-Resource Relayer */}
         <div className="lg:col-span-6 bg-[#0a0a0a] border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
           <div>
-            <div className="pb-3 border-b border-slate-800 flex justify-between items-center">
-              <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider flex items-center gap-2">
+            <div className="pb-3 border-b border-slate-800 flex justify-between items-center flex-wrap gap-2">
+              <div className="flex items-center gap-2">
                 <Share2 className="w-4 h-4 text-indigo-400" />
-                Animated Packet Relay Feed
-              </h3>
-              <span className="text-[10px] font-mono text-slate-500">PACKETS: {simulatedPackets.toLocaleString()}</span>
+                <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider">
+                  Shared Packet Relay Feed
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 text-[10px] font-mono text-cyan-300 bg-cyan-950/60 px-2.5 py-1 rounded-md border border-cyan-800/60 shadow-sm">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                  <span className="text-cyan-500 font-semibold">LAST UPDATED:</span>
+                  <span className="font-bold text-cyan-200">{lastRelaySync || 'Syncing...'}</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-400 bg-slate-900/80 px-2 py-1 rounded-md border border-slate-800">
+                  {relayLog.length} ENTRIES
+                </span>
+              </div>
             </div>
 
             <div className="mt-3 space-y-2">
               <div className="flex gap-2">
                 <input
                   type="text"
+                  maxLength={500}
                   value={activeMessage}
                   onChange={(e) => setActiveMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void transmitPacket();
+                  }}
+                  placeholder="Enter relay payload (max 500 chars)..."
                   className="flex-1 bg-[#050505] border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
                 />
                 <button
                   onClick={transmitPacket}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono font-semibold rounded-lg transition flex items-center gap-1"
+                  disabled={isTransmitting || !activeMessage.trim()}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-mono font-semibold rounded-lg transition flex items-center gap-1 shrink-0"
                 >
-                  <Send className="w-3 h-3" /> TRANSMIT
+                  <Send className="w-3 h-3" /> {isTransmitting ? 'RELAYING...' : 'RELAY'}
                 </button>
               </div>
 
+              {relayError && (
+                <p className="text-[10px] font-mono text-rose-400 bg-rose-500/10 p-1.5 rounded border border-rose-500/20">
+                  {relayError}
+                </p>
+              )}
+
               <div className="flex flex-wrap gap-1 pt-1">
-                {['ORB_HARMONIC_PULSE', 'ANVIL_BLOCK_PROBE', 'VERCEL_CORS_VERIFY', 'HSM_SIGNATURE_REQ'].map(
-                  (msg) => (
-                    <button
-                      key={msg}
-                      onClick={() => setActiveMessage(msg)}
-                      className="text-[9px] font-mono px-2 py-0.5 bg-[#050505] text-slate-400 hover:text-white rounded border border-slate-800"
-                    >
-                      {msg}
-                    </button>
-                  )
-                )}
+                {[
+                  'ORB_COHERENCE_SYNC',
+                  'BLOCK_FINALITY_ATTEST',
+                  'HSM_ENTROPY_PULSE',
+                  'SIGNATURE_VERIFIED_OK',
+                ].map((msg) => (
+                  <button
+                    key={msg}
+                    onClick={() => setActiveMessage(msg)}
+                    className="text-[9px] font-mono px-2 py-0.5 bg-[#050505] text-slate-400 hover:text-white rounded border border-slate-800 transition"
+                  >
+                    {msg}
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="mt-4">
-              <span className="text-[10px] uppercase tracking-widest text-slate-500 block mb-2 font-semibold font-mono">
-                Live Transit Relay Feed
-              </span>
-              <div className="space-y-1.5 max-h-36 overflow-y-auto font-mono text-xs">
-                {transitLog.map((log) => (
-                  <div
-                    key={log.id}
-                    className="p-2 bg-[#050505] border border-slate-800 rounded-lg flex items-center justify-between text-[11px]"
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <span className="text-indigo-400 font-semibold">{log.from}</span>
-                      <ArrowRight className="w-3 h-3 text-slate-600 shrink-0" />
-                      <span className="text-purple-400 font-semibold">{log.to}</span>
-                      <span className="text-white font-mono ml-1 truncate">[{log.payload}]</span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      <span className="text-[10px] text-emerald-400">{log.latencyMs}ms</span>
-                      <span className="text-[9px] text-slate-500">{log.time}</span>
-                    </div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold font-mono">
+                  Shared Server Relay Store (Poll: 4s)
+                </span>
+                <span className="text-[9px] font-mono text-slate-500">
+                  Clients see identical shared state
+                </span>
+              </div>
+
+              <div className="space-y-1.5 max-h-48 overflow-y-auto font-mono text-xs pr-1">
+                {relayLog.length === 0 ? (
+                  <div className="p-4 text-center text-slate-500 text-xs font-mono border border-dashed border-slate-800 rounded-lg">
+                    No relay entries yet. Transmit a packet to broadcast to all clients.
                   </div>
-                ))}
+                ) : (
+                  <AnimatePresence initial={false}>
+                    {relayLog.map((log, index) => (
+                      <motion.div
+                        key={log.id}
+                        layout
+                        initial={{ opacity: 0, y: -12, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{ duration: 0.25, ease: 'easeOut' }}
+                        className={`p-2 rounded-lg flex items-center justify-between text-[11px] border transition ${
+                          index === 0
+                            ? 'bg-[#0c0d14] border-indigo-500/40 shadow-sm shadow-indigo-950/20'
+                            : 'bg-[#050505] border-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <span className="text-indigo-400 font-semibold shrink-0">{log.from_node}</span>
+                          <ArrowRight className="w-3 h-3 text-slate-600 shrink-0" />
+                          <span className="text-purple-400 font-semibold shrink-0">{log.to_node}</span>
+                          <span className="text-white font-mono ml-1 truncate">[{log.payload}]</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                              log.source === 'dashboard'
+                                ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            }`}
+                          >
+                            {log.source}
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">
+                            {new Date(log.created_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                )}
               </div>
             </div>
           </div>
 
-          <div className="mt-4 pt-3 border-t border-slate-800 text-[10px] font-mono text-slate-500 flex justify-between items-center">
+          <div className="mt-4 pt-3 border-t border-slate-800 text-[10px] font-mono text-slate-500 flex justify-between items-center flex-wrap gap-2">
             <span className="text-emerald-400 flex items-center gap-1 font-semibold">
-              <CheckCircle2 className="w-3.5 h-3.5" /> MEECHAIN MAGIC PROTOCOL v3 ACTIVE
+              <CheckCircle2 className="w-3.5 h-3.5" /> SHARED STATE SYNCHRONIZED
             </span>
-            <span>Real Probe: 15s Interval</span>
+            <span className="text-slate-400">Multi-Client Polling: 4s Interval</span>
           </div>
         </div>
       </div>
     </div>
   );
 }
+

@@ -18,14 +18,14 @@ Unified Command Center สำหรับผู้ใช้, นักพัฒ�
 - Requests: 1.4k  
 - Error Rate: 0.02%  
 - Latency: 18–24 ms  
-- ChainId: 33101  
+- ChainId: 13390  
 
 ---
 
 ## 🔌 ComPort Hall
 - **Live Endpoint Probe**  
   - `api.meechain.live` → Latency 18 ms, TLS 1.3, HTTP 200 OK  
-  - `rpc.meechain.live` → Latency 24 ms, JSON-RPC sync, ChainId 33101  
+  - `rpc.meechain.live` → Latency 24 ms, JSON-RPC sync, ChainId 13390  
 - **Dynamic Status Indicators**  
   - 🟙 Connected • 🟣 Sending • 🟡 Idle • 🔴 Disconnected  
 - **Auto Refresh Cycle** → ตรวจสอบทุก 15 วินาที พร้อม countdown  
@@ -40,7 +40,7 @@ Unified Command Center สำหรับผู้ใช้, นักพัฒ�
   2. `/api/magic/orb` → Schema Verified  
   3. `/api/stats` → Multi-Pillar Verified  
   4. `eth_blockNumber` → RPC Verified  
-  5. `eth_chainId` → ChainId Verified (33101)  
+  5. `eth_chainId` → ChainId Verified (13390)  
   6. CORS Headers → Whitelist `*.vercel.app`  
   7. TLS 1.3 Enforcement → Passed  
   8. Chaos Resilience → 503 Injection + Backoff Passed  
@@ -51,7 +51,7 @@ Unified Command Center สำหรับผู้ใช้, นักพัฒ�
 
 ## 🖥️ JSON-RPC Terminal
 - `eth_blockNumber` → ตรวจสอบ block height สด (#18,492,040+)  
-- `eth_chainId` → ยืนยัน chainId 33101  
+- `eth_chainId` → ยืนยัน chainId 13390  
 - `eth_gasPrice` → ราคาก๊าซสด (1.35 Gwei)  
 - **Interactive Console** → Query สดและ latency measurement  
 

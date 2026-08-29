@@ -33,6 +33,7 @@ import { ProductionCodeHub } from './components/ProductionCodeHub';
 import { LiveBlockStream } from './components/LiveBlockStream';
 import { ErrorRecoveryBanner } from './components/ErrorRecoveryBanner';
 import { AggregatedStats } from './types';
+import { speakNotification } from './utils/speech';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'orb' | 'stats' | 'magichall' | 'tests' | 'codehub'>('magichall');
@@ -43,6 +44,56 @@ export default function App() {
   const [stats, setStats] = useState<AggregatedStats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [statsError, setStatsError] = useState<string | null>(null);
+
+  // Web Speech API Voice Notification State
+  const [voiceAlertEnabled, setVoiceAlertEnabled] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('meechain_voice_alerts');
+      return saved !== null ? saved === 'true' : true;
+    }
+    return true;
+  });
+
+  const prevHealthyRef = React.useRef<boolean | null>(null);
+
+  const toggleVoiceAlert = useCallback(() => {
+    setVoiceAlertEnabled((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('meechain_voice_alerts', String(next));
+      }
+      if (next) {
+        speakNotification('Voice notifications enabled.');
+      }
+      return next;
+    });
+  }, []);
+
+  const handleTestVoiceAlert = useCallback(() => {
+    speakNotification('Test Notification: MeeChain backend health monitoring active.');
+  }, []);
+
+  const handleSpeakOfflineAlert = useCallback(() => {
+    speakNotification('Alert: MeeChain backend health status is offline.');
+  }, []);
+
+  // Audible notification on backend health status transition
+  useEffect(() => {
+    if (prevHealthyRef.current !== null) {
+      if (prevHealthyRef.current === true && !isBackendHealthy) {
+        // Transitioned to Offline
+        if (voiceAlertEnabled) {
+          speakNotification('Alert: MeeChain backend health status is offline.');
+        }
+      } else if (prevHealthyRef.current === false && isBackendHealthy) {
+        // Transitioned back to Online
+        if (voiceAlertEnabled) {
+          speakNotification('Notice: MeeChain backend service is back online.');
+        }
+      }
+    }
+    prevHealthyRef.current = isBackendHealthy;
+  }, [isBackendHealthy, voiceAlertEnabled]);
 
   // Probe health
   const checkHealth = useCallback(async () => {
@@ -123,6 +174,9 @@ export default function App() {
         toggleChaosMode={toggleChaosMode}
         isBackendHealthy={isBackendHealthy}
         latency={latency}
+        voiceAlertEnabled={voiceAlertEnabled}
+        toggleVoiceAlert={toggleVoiceAlert}
+        onTestVoiceAlert={handleTestVoiceAlert}
       />
 
       {/* Main Content Area */}
@@ -136,6 +190,7 @@ export default function App() {
             fetchStats();
           }}
           lastConnected={lastConnected}
+          onSpeakAlert={handleSpeakOfflineAlert}
         />
 
         {/* View Switcher */}

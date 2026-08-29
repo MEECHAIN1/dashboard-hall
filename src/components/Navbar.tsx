@@ -10,7 +10,10 @@ import {
   AlertOctagon,
   RefreshCw,
   Zap,
-  Globe
+  Globe,
+  Volume2,
+  VolumeX,
+  AudioWaveform,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -20,6 +23,9 @@ interface NavbarProps {
   toggleChaosMode: () => void;
   isBackendHealthy: boolean;
   latency: number;
+  voiceAlertEnabled?: boolean;
+  toggleVoiceAlert?: () => void;
+  onTestVoiceAlert?: () => void;
 }
 
 export function Navbar({
@@ -29,6 +35,9 @@ export function Navbar({
   toggleChaosMode,
   isBackendHealthy,
   latency,
+  voiceAlertEnabled = true,
+  toggleVoiceAlert,
+  onTestVoiceAlert,
 }: NavbarProps) {
   return (
     <header className="border-b border-slate-800 bg-[#050505] sticky top-0 z-50">
@@ -47,7 +56,40 @@ export function Navbar({
           </span>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* Web Speech API Audio Notification Control */}
+          <div className="flex items-center gap-1.5 bg-[#0a0a0a] border border-slate-800/80 px-2 py-0.5 rounded-full">
+            <button
+              onClick={toggleVoiceAlert}
+              className={`flex items-center gap-1 text-[10px] font-mono transition ${
+                voiceAlertEnabled
+                  ? 'text-cyan-400 hover:text-cyan-300'
+                  : 'text-slate-500 hover:text-slate-400'
+              }`}
+              title={voiceAlertEnabled ? 'Disable Web Speech audible alerts' : 'Enable Web Speech audible alerts'}
+            >
+              {voiceAlertEnabled ? (
+                <Volume2 className="w-3 h-3 text-cyan-400" />
+              ) : (
+                <VolumeX className="w-3 h-3 text-slate-500" />
+              )}
+              <span className="hidden xs:inline">Voice Alert:</span>
+              <span className="font-semibold">{voiceAlertEnabled ? 'ON' : 'OFF'}</span>
+            </button>
+            {onTestVoiceAlert && voiceAlertEnabled && (
+              <>
+                <span className="text-slate-700 text-[10px]">•</span>
+                <button
+                  onClick={onTestVoiceAlert}
+                  className="text-[9px] text-slate-400 hover:text-cyan-300 font-mono underline underline-offset-2 transition"
+                  title="Test Web Speech audible alert"
+                >
+                  Test
+                </button>
+              </>
+            )}
+          </div>
+
           {/* Fault Test toggle */}
           <div className="flex items-center gap-2">
             <span className="text-[10px] uppercase tracking-widest text-slate-500">Chaos Test:</span>
