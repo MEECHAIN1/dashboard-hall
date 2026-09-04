@@ -47,14 +47,19 @@ export function MagicHallView() {
   // Fetch real shared relay log from server-side store
   const fetchRelayLog = useCallback(async () => {
     try {
-      const res = await fetch('/api/control-plane/comports/relay?limit=10');
-      if (res.ok) {
+      const res = await fetch('/api/control-plane/comports/relay?limit=10', {
+        headers: { 'Accept': 'application/json' },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        setRelayLog(data.entries || []);
-        setLastRelaySync(new Date().toLocaleTimeString());
+        if (data && Array.isArray(data.entries)) {
+          setRelayLog(data.entries);
+          setLastRelaySync(new Date().toLocaleTimeString());
+        }
       }
     } catch (e) {
-      console.error('[ComPort Relay] Fetch error:', e);
+      console.warn('[ComPort Relay] Sync notice:', e);
     }
   }, []);
 
@@ -67,11 +72,19 @@ export function MagicHallView() {
     // 1. Probe API endpoint
     const startApi = performance.now();
     try {
-      const res = await fetch('/api/probe?target=api.meechain.live');
-      const data = await res.json();
-      const lat = data.latencyMs || Math.round(performance.now() - startApi);
-      setApiLatency(lat);
-      setApiStatus(res.ok ? 'connected' : 'disconnected');
+      const res = await fetch('/api/probe?target=api.meechain.live', {
+        headers: { 'Accept': 'application/json' },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        const lat = data.latencyMs || Math.round(performance.now() - startApi);
+        setApiLatency(lat);
+        setApiStatus('connected');
+      } else {
+        setApiLatency(Math.round(performance.now() - startApi));
+        setApiStatus(res.ok ? 'connected' : 'disconnected');
+      }
     } catch {
       setApiLatency(Math.round(performance.now() - startApi));
       setApiStatus('disconnected');
@@ -80,11 +93,19 @@ export function MagicHallView() {
     // 2. Probe RPC endpoint
     const startRpc = performance.now();
     try {
-      const res = await fetch('/api/probe?target=rpc.meechain.live');
-      const data = await res.json();
-      const lat = data.latencyMs || Math.round(performance.now() - startRpc);
-      setRpcLatency(lat);
-      setRpcStatus(res.ok ? 'connected' : 'disconnected');
+      const res = await fetch('/api/probe?target=rpc.meechain.live', {
+        headers: { 'Accept': 'application/json' },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        const lat = data.latencyMs || Math.round(performance.now() - startRpc);
+        setRpcLatency(lat);
+        setRpcStatus('connected');
+      } else {
+        setRpcLatency(Math.round(performance.now() - startRpc));
+        setRpcStatus(res.ok ? 'connected' : 'disconnected');
+      }
     } catch {
       setRpcLatency(Math.round(performance.now() - startRpc));
       setRpcStatus('disconnected');
@@ -92,16 +113,21 @@ export function MagicHallView() {
 
     // 3. Refresh comports from backend (which separates live probes from identity-only)
     try {
-      const res = await fetch('/api/control-plane/comports');
-      if (res.ok) {
+      const res = await fetch('/api/control-plane/comports', {
+        headers: { 'Accept': 'application/json' },
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        setComports(data.ports || []);
-        if (data.ports?.length > 0 && !selectedPort) {
-          setSelectedPort(data.ports[0].id);
+        if (data && Array.isArray(data.ports)) {
+          setComports(data.ports);
+          if (data.ports.length > 0 && !selectedPort) {
+            setSelectedPort(data.ports[0].id);
+          }
         }
       }
     } catch (e) {
-      console.error(e);
+      console.warn('[ComPorts] Fetch notice:', e);
     } finally {
       setLoading(false);
       setProbingAll(false);
@@ -148,7 +174,10 @@ export function MagicHallView() {
     try {
       const res = await fetch('/api/control-plane/comports/relay', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({
           from,
           to: 'MeeChain Mesh Hub',
@@ -157,9 +186,14 @@ export function MagicHallView() {
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to relay packet');
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to relay packet');
+        }
+      } else if (!res.ok) {
+        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
       }
 
       // Immediate refresh so user doesn't wait for next 4s poll cycle

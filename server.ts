@@ -2,7 +2,14 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { PRODUCTION_FILE_REGISTRY, getRegistryEntry } from './src/lib/productionFileRegistry';
-import { getFileContentById, getLatestWorkflowRun, getLatestCommitSha } from './src/lib/github';
+import {
+  getFileContentById,
+  getLatestWorkflowRun,
+  getLatestCommitSha,
+  getWorkflowRunsWithJobs,
+  rerunWorkflowRun,
+  rerunWorkflowJob,
+} from './src/lib/github';
 import { getLatestDeployment } from './src/lib/vercel';
 
 const app = express();
@@ -425,7 +432,7 @@ app.get('/api/control-plane/comports', checkChaos, async (req: Request, res: Res
 });
 
 // 6b. Relay Log Endpoints (Shared Server State / Supabase)
-app.get('/api/control-plane/comports/relay', checkChaos, (req: Request, res: Response) => {
+const handleGetRelayLogs = (req: Request, res: Response) => {
   const limitParam = Number(req.query.limit);
   const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 50) : 10;
 
@@ -435,19 +442,21 @@ app.get('/api/control-plane/comports/relay', checkChaos, (req: Request, res: Res
     );
     const data = sorted.slice(0, limit);
 
+    res.setHeader('Content-Type', 'application/json');
     res.json({
       entries: data,
       count: data.length,
       updatedAt: new Date().toISOString(),
     });
   } catch (err) {
+    res.setHeader('Content-Type', 'application/json');
     res.status(500).json({
       error: err instanceof Error ? err.message : String(err),
     });
   }
-});
+};
 
-app.post('/api/control-plane/comports/relay', checkChaos, (req: Request, res: Response) => {
+const handlePostRelayPacket = (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
     const from = body.from || body.from_node;
@@ -460,12 +469,14 @@ app.post('/api/control-plane/comports/relay', checkChaos, (req: Request, res: Re
       typeof to !== 'string' || !to.trim() ||
       typeof payload !== 'string' || !payload.trim()
     ) {
+      res.setHeader('Content-Type', 'application/json');
       return res.status(400).json({
         error: 'ต้องระบุ from, to, payload เป็น string ที่ไม่ว่าง',
       });
     }
 
     if (payload.length > 500) {
+      res.setHeader('Content-Type', 'application/json');
       return res.status(400).json({
         error: 'payload ยาวเกิน 500 ตัวอักษร',
       });
@@ -485,17 +496,27 @@ app.post('/api/control-plane/comports/relay', checkChaos, (req: Request, res: Re
       serverRelayLogs.pop();
     }
 
+    res.setHeader('Content-Type', 'application/json');
     res.status(201).json({
       ok: true,
       id: newEntry.id,
       timestamp: newEntry.created_at,
     });
   } catch (err) {
+    res.setHeader('Content-Type', 'application/json');
     res.status(500).json({
       error: err instanceof Error ? err.message : String(err),
     });
   }
-});
+};
+
+app.get('/api/control-plane/comports/relay', checkChaos, handleGetRelayLogs);
+app.get('/api/comports/relay', checkChaos, handleGetRelayLogs);
+app.get('/api/production/relay', checkChaos, handleGetRelayLogs);
+
+app.post('/api/control-plane/comports/relay', checkChaos, handlePostRelayPacket);
+app.post('/api/comports/relay', checkChaos, handlePostRelayPacket);
+app.post('/api/production/relay', checkChaos, handlePostRelayPacket);
 
 // Helper for serialized error responses
 function serializeError(err: unknown): string {
@@ -614,6 +635,7 @@ app.get('/api/production/deploy-status', async (req: Request, res: Response) => 
       target: 'production',
       createdAt: Date.now() - 3600000,
       commitSha: '8f92a1c4b7e3d2a9f1b0e4c8d7e6f5a4b3c2d1e0',
+      teamIdUsed: undefined,
     };
     deploymentError = null;
   }
@@ -665,6 +687,42 @@ app.get('/api/production/ci-status', async (req: Request, res: Response) => {
       source: 'live-probe',
       updatedAt: new Date().toISOString(),
     });
+  } catch (err) {
+    return res.status(500).json({ error: serializeError(err) });
+  }
+});
+
+// GET /api/production/ci-jobs (Last 5 workflow runs with granular job steps and logs)
+app.get('/api/production/ci-jobs', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 5, 10);
+    const runs = await getWorkflowRunsWithJobs(limit);
+    return res.json({
+      runs,
+      count: runs.length,
+      source: process.env.GITHUB_TOKEN ? 'live-probe' : 'verified-mock',
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: serializeError(err) });
+  }
+});
+
+// POST /api/production/ci-rerun (Re-run a workflow run or individual job)
+app.post('/api/production/ci-rerun', async (req: Request, res: Response) => {
+  try {
+    const { runId, jobId, failedOnly } = req.body || {};
+    if (!runId && !jobId) {
+      return res.status(400).json({ error: 'runId or jobId is required' });
+    }
+
+    if (jobId) {
+      const result = await rerunWorkflowJob(jobId);
+      return res.json(result);
+    } else {
+      const result = await rerunWorkflowRun(runId, Boolean(failedOnly));
+      return res.json(result);
+    }
   } catch (err) {
     return res.status(500).json({ error: serializeError(err) });
   }
